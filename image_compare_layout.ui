@@ -234,6 +234,19 @@
            </property>
           </widget>
          </item>
+         <item>
+          <widget class="QPushButton" name="btnMoveMarkedToTrash">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="toolTip">
+            <string>Move pictures marked for deletion to the system Trash.</string>
+           </property>
+           <property name="text">
+            <string>🗑 Move to trash</string>
+           </property>
+          </widget>
+         </item>
         </layout>
        </item>
       </layout>

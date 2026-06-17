@@ -28,8 +28,11 @@ from image_display import clear_label, make_preview_pixmap
 
 
 PathGetter = Callable[[], Path | None]
+PathListGetter = Callable[[], list[Path]]
+PathSetter = Callable[[Path], None]
 StatusGetter = Callable[[Path], str]
 StatusSetter = Callable[[Path, str], bool]
+DefaultSetter = Callable[[Path], bool]
 
 
 class PreviewFullscreenButton(QObject):
@@ -108,14 +111,20 @@ class FullscreenImageWindow(QDialog):
         locked_path_getter: PathGetter,
         selected_path_getter: PathGetter,
         start_role: str,
+        group_paths_getter: PathListGetter | None = None,
+        selected_path_setter: PathSetter | None = None,
         status_getter: StatusGetter | None = None,
         status_setter: StatusSetter | None = None,
+        default_setter: DefaultSetter | None = None,
     ) -> None:
         super().__init__(parent)
         self.get_locked_path = locked_path_getter
         self.get_selected_path = selected_path_getter
+        self.get_group_paths = group_paths_getter or (lambda: [])
+        self.set_selected_path = selected_path_setter or (lambda _path: None)
         self.get_status = status_getter or (lambda _path: "")
         self.set_status = status_setter or (lambda _path, _status: False)
+        self.set_default = default_setter or (lambda _path: False)
         self.active_role = start_role if start_role in self.ROLE_TITLES else self.ROLE_SELECTED
         # The action buttons must always affect the image that is actually
         # visible in this window.  Keep a direct copy of the last displayed
@@ -126,6 +135,9 @@ class FullscreenImageWindow(QDialog):
         self.displayed_role: str = self.active_role
 
         self.setWindowTitle("Fullscreen image view")
+        app_icon = QApplication.windowIcon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
         self.resize_timer = QTimer(self)
@@ -136,6 +148,12 @@ class FullscreenImageWindow(QDialog):
         self.title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
+        self.btn_previous = QPushButton("◀", self)
+        self.btn_previous.setToolTip("Show the previous picture in the currently selected list group")
+        self.btn_next = QPushButton("▶", self)
+        self.btn_next.setToolTip("Show the next picture in the currently selected list group")
+        self.btn_set_default = QPushButton("Set as default", self)
+        self.btn_set_default.setToolTip("Make the currently shown fullscreen image the default/locked image")
         self.btn_show_locked = QPushButton("Default image", self)
         self.btn_show_selected = QPushButton("Checked image", self)
         self.btn_show_locked.setCheckable(True)
@@ -147,6 +165,9 @@ class FullscreenImageWindow(QDialog):
         self.btn_close = QPushButton("Close", self)
         # Explicit ``_checked`` argument keeps PySide's checkable-button signal
         # from accidentally confusing the role-switch callback.
+        self.btn_previous.clicked.connect(lambda _checked=False: self.show_group_offset(-1))
+        self.btn_next.clicked.connect(lambda _checked=False: self.show_group_offset(1))
+        self.btn_set_default.clicked.connect(self.set_current_image_as_default)
         self.btn_show_locked.clicked.connect(
             lambda _checked=False: self.set_active_role(self.ROLE_LOCKED)
         )
@@ -157,6 +178,9 @@ class FullscreenImageWindow(QDialog):
 
         switch_toolbar = QHBoxLayout()
         switch_toolbar.addWidget(self.title_label, 1)
+        switch_toolbar.addWidget(self.btn_previous)
+        switch_toolbar.addWidget(self.btn_next)
+        switch_toolbar.addWidget(self.btn_set_default)
         switch_toolbar.addWidget(self.btn_show_locked)
         switch_toolbar.addWidget(self.btn_show_selected)
         switch_toolbar.addWidget(self.btn_close)
@@ -239,6 +263,66 @@ class FullscreenImageWindow(QDialog):
         self.displayed_role = role
         self.displayed_path = path
 
+    def current_group_paths(self) -> list[Path]:
+        """Return unique existing paths from the currently selected list group."""
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        for path in self.get_group_paths():
+            path = Path(path)
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+        return paths
+
+    def current_group_index(self, paths: list[Path] | None = None) -> int:
+        """Return the index of the displayed image in the selected group."""
+        if paths is None:
+            paths = self.current_group_paths()
+        active = self.active_path()
+        if active is None:
+            return -1
+        try:
+            return paths.index(active)
+        except ValueError:
+            return -1
+
+    def show_group_offset(self, offset: int) -> None:
+        """Show the previous/next image in the currently selected list group."""
+        paths = self.current_group_paths()
+        if not paths:
+            return
+
+        current_index = self.current_group_index(paths)
+        if current_index < 0:
+            # If the current fullscreen image is the locked/default image and is
+            # not part of the selected group, start browsing from the currently
+            # selected image when possible.
+            selected_path = self.get_selected_path()
+            if selected_path in paths:
+                current_index = paths.index(selected_path)
+            else:
+                current_index = 0
+
+        new_index = (current_index + offset) % len(paths)
+        new_path = paths[new_index]
+
+        # Put the main-window selection on the same image so the side preview,
+        # metadata text, and selected-list group stay in sync.
+        self.set_selected_path(new_path)
+        self.active_role = self.ROLE_SELECTED
+        self.set_action_target(self.ROLE_SELECTED, new_path)
+        self.refresh_image()
+
+    def set_current_image_as_default(self) -> None:
+        """Make the image currently shown in this window the default picture."""
+        path = self.active_path()
+        if path is None:
+            return
+        if self.set_default(path):
+            self.refresh_status_controls()
+            self.paths_changed(start_role=self.active_role)
+
     def paths_changed(self, start_role: str | None = None) -> None:
         """Refresh button states and image after app selection/lock changes."""
         if start_role in self.ROLE_TITLES:
@@ -246,8 +330,11 @@ class FullscreenImageWindow(QDialog):
 
         locked_available = self.get_locked_path() is not None
         selected_available = self.get_selected_path() is not None
+        group_count = len(self.current_group_paths())
         self.btn_show_locked.setEnabled(locked_available)
         self.btn_show_selected.setEnabled(selected_available)
+        self.btn_previous.setEnabled(group_count > 1)
+        self.btn_next.setEnabled(group_count > 1)
 
         if self.path_for_role(self.active_role) is None:
             if selected_available:
@@ -298,9 +385,11 @@ class FullscreenImageWindow(QDialog):
             self.btn_keep.setEnabled(False)
             self.btn_mark_delete.setEnabled(False)
             self.btn_clear_mark.setEnabled(False)
+            self.btn_set_default.setEnabled(False)
             return
 
         role_title = self.ROLE_TITLES.get(self.displayed_role, "Image")
+        self.btn_set_default.setEnabled(True)
         status = self.get_status(path)
         if status == "keep":
             self.status_label.setText(
@@ -330,6 +419,9 @@ class FullscreenImageWindow(QDialog):
         path = self.path_for_role(self.active_role)
         self.set_action_target(self.active_role, path)
 
+        group_paths = self.current_group_paths()
+        self.btn_previous.setEnabled(len(group_paths) > 1)
+        self.btn_next.setEnabled(len(group_paths) > 1)
         self.btn_show_locked.setChecked(self.active_role == self.ROLE_LOCKED)
         self.btn_show_selected.setChecked(self.active_role == self.ROLE_SELECTED)
         self.refresh_status_controls()
@@ -340,8 +432,12 @@ class FullscreenImageWindow(QDialog):
             return
 
         title = self.ROLE_TITLES.get(self.active_role, "Image")
+        group_note = ""
+        group_index = self.current_group_index(group_paths)
+        if group_index >= 0 and len(group_paths) > 1:
+            group_note = f" · group image {group_index + 1}/{len(group_paths)}"
         self.setWindowTitle(f"{title} — {path.name}")
-        self.title_label.setText(f"{title}: {path.name} — {path.parent}")
+        self.title_label.setText(f"{title}: {path.name}{group_note} — {path.parent}")
         self.image_label.setToolTip(str(path))
 
         try:
@@ -370,7 +466,15 @@ class FullscreenImageWindow(QDialog):
         if key == Qt.Key.Key_Escape:
             self.close()
             return
-        if key in {Qt.Key.Key_Space, Qt.Key.Key_Left, Qt.Key.Key_Right}:
+        if key == Qt.Key.Key_Left:
+            if len(self.current_group_paths()) > 1:
+                self.show_group_offset(-1)
+                return
+        if key == Qt.Key.Key_Right:
+            if len(self.current_group_paths()) > 1:
+                self.show_group_offset(1)
+                return
+        if key == Qt.Key.Key_Space:
             other_role = (
                 self.ROLE_LOCKED
                 if self.active_role == self.ROLE_SELECTED

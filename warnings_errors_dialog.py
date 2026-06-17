@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -20,6 +21,9 @@ class WarningsErrorsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Warnings / errors")
+        app_icon = QApplication.windowIcon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.resize(900, 500)
 
         self.label_summary = QLabel("No warnings/errors yet.", self)

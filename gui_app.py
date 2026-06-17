@@ -51,6 +51,7 @@ from picture_list_columns import DEFAULT_COLUMN_WIDTHS, HEADERS, PictureColumn, 
 from picture_list_io import PictureListDocument, PictureListEntry, read_picture_list, write_picture_list
 from picture_loader import is_image_file, load_picture_paths_with_progress
 from warnings_errors_dialog import WarningsErrorsDialog
+from trash_delete import move_path_to_trash
 from picture_sorting import (
     SortMode,
     sort_mode_to_column_order,
@@ -159,6 +160,7 @@ class PictureExifCompareApp:
         self.btn_keep: QPushButton = self._required_child(QPushButton, "btnKeepPicture")
         self.btn_clear_keep: QPushButton = self._required_child(QPushButton, "btnClearKeepMark")
         self.btn_delete: QPushButton = self._required_child(QPushButton, "btnMarkForDeletion")
+        self.btn_move_to_trash: QPushButton = self._required_child(QPushButton, "btnMoveMarkedToTrash")
         self.btn_lock: QPushButton = self._required_child(QPushButton, "btnLockSelected")
         self.btn_clear_locked: QPushButton = self._required_child(QPushButton, "btnClearLocked")
         self.label_locked: QLabel = self._required_child(QLabel, "labelLockedImage")
@@ -310,6 +312,7 @@ class PictureExifCompareApp:
         self.btn_pause_scan.setVisible(False)
         self.btn_cancel_scan.setVisible(False)
         self._set_image_list_controls_enabled(True)
+        self.update_move_to_trash_button_state()
         self.show_persistent_statistics_in_statusbar()
 
     def set_scan_controls_running(self, text: str) -> None:
@@ -325,6 +328,7 @@ class PictureExifCompareApp:
         self.btn_pause_scan.setVisible(True)
         self.btn_cancel_scan.setVisible(True)
         self._set_image_list_controls_enabled(False)
+        self.update_move_to_trash_button_state()
 
     def _set_image_list_controls_enabled(self, enabled: bool) -> None:
         """Enable/disable buttons and menu actions that start list operations."""
@@ -335,6 +339,7 @@ class PictureExifCompareApp:
             "btn_save_image_list",
             "btn_load_image_list",
             "btn_search_duplicates",
+            "btn_move_to_trash",
         ):
             widget = getattr(self, attr_name, None)
             if widget is not None:
@@ -706,12 +711,14 @@ class PictureExifCompareApp:
         self.btn_cancel_scan.clicked.connect(self.cancel_scan)
         self.list_pictures.currentItemChanged.connect(self.on_picture_selected)
         self.list_pictures.itemChanged.connect(self.on_picture_item_changed)
+        self.list_pictures.itemDoubleClicked.connect(self.open_fullscreen_from_item)
         self.list_pictures.header().sectionClicked.connect(self.sort_picture_list_by_clicked_column)
         self.btn_lock.clicked.connect(self.lock_selected_picture)
         self.btn_clear_locked.clicked.connect(self.clear_locked_picture)
         self.btn_keep.clicked.connect(lambda: self.set_selected_status("keep"))
         self.btn_clear_keep.clicked.connect(self.clear_keep_for_selected_picture)
         self.btn_delete.clicked.connect(lambda: self.set_selected_status("delete"))
+        self.btn_move_to_trash.clicked.connect(self.move_marked_pictures_to_trash)
 
     def show(self) -> None:
         self.window.show()
@@ -763,8 +770,11 @@ class PictureExifCompareApp:
                 locked_path_getter=lambda: self.locked_path,
                 selected_path_getter=lambda: self.current_path,
                 start_role=start_role,
+                group_paths_getter=self.current_selected_group_paths,
+                selected_path_setter=self.select_path_from_fullscreen,
                 status_getter=lambda path: self.status_by_path.get(path, ""),
                 status_setter=self.set_path_status_from_fullscreen,
+                default_setter=self.set_default_path_from_fullscreen,
             )
         else:
             self.fullscreen_image_window.paths_changed(start_role=start_role)
@@ -772,6 +782,88 @@ class PictureExifCompareApp:
         self.fullscreen_image_window.show()
         self.fullscreen_image_window.raise_()
         self.fullscreen_image_window.activateWindow()
+
+    def open_fullscreen_from_item(self, item: QTreeWidgetItem, column: int = 0) -> None:
+        """Double-click an image row to open it in the large preview.
+
+        This is useful when no default image has been chosen yet: select or
+        double-click a picture in the list and the large preview opens directly
+        on that selected image.
+        """
+        del column
+        path_text = item.data(PictureColumn.NAME, PATH_ROLE) if item is not None else ""
+        if not path_text:
+            return
+        self.list_pictures.setCurrentItem(item)
+        self.open_fullscreen_image("selected")
+
+    def current_visible_picture_paths(self) -> list[Path]:
+        """Return visible picture paths in the same order as the tree list."""
+        paths: list[Path] = []
+        for item in self.iter_picture_items():
+            path_text = item.data(PictureColumn.NAME, PATH_ROLE)
+            if path_text:
+                paths.append(Path(path_text))
+        return paths
+
+    def current_selected_group_paths(self) -> list[Path]:
+        """Return paths belonging to the currently selected visible group.
+
+        In duplicate view this means the sibling rows under the same
+        Duplicates/Unique parent. In flat view there are no parent headers, so
+        the whole visible list is the browsing group.
+        """
+        current = self.list_pictures.currentItem()
+        if current is None:
+            return self.current_visible_picture_paths()
+
+        current_path_text = current.data(PictureColumn.NAME, PATH_ROLE)
+        if not current_path_text:
+            return self.current_visible_picture_paths()
+
+        parent = current.parent()
+        if parent is not None:
+            paths: list[Path] = []
+            for index in range(parent.childCount()):
+                child = parent.child(index)
+                path_text = child.data(PictureColumn.NAME, PATH_ROLE)
+                if path_text:
+                    paths.append(Path(path_text))
+            if paths:
+                return paths
+
+        # Flat list row or a fallback if the parent did not contain image rows.
+        return self.current_visible_picture_paths()
+
+    def select_path_from_fullscreen(self, path: Path) -> None:
+        """Select a picture row when the large preview moves prev/next."""
+        path = Path(path)
+        item = self.find_item_for_path_with_progress(path)
+        if item is not None:
+            self.list_pictures.setCurrentItem(item)
+        else:
+            # Fallback if the item cannot be found in the current visible tree.
+            self.current_path = path
+            if path.exists():
+                show_picture_on_label(path, self.label_selected)
+                self.text_selected.setPlainText(build_info_text(path))
+
+    def set_default_path_from_fullscreen(self, path: Path) -> bool:
+        """Set the default/locked picture from the fullscreen window."""
+        path = Path(path)
+        if path not in self.picture_paths:
+            QMessageBox.information(
+                self.window,
+                "Picture not in list",
+                "That picture is no longer in the current list.",
+            )
+            return False
+
+        self.locked_path = path
+        show_picture_on_label(self.locked_path, self.label_locked)
+        self.text_locked.setPlainText(build_info_text(self.locked_path))
+        self.message(f"Locked default picture: {self.locked_path.name}")
+        return True
 
     def refresh_fullscreen_window_if_open(self) -> None:
         """Keep the large image window in sync when selected/locked images change."""
@@ -786,6 +878,29 @@ class PictureExifCompareApp:
         self.warning_error_messages.extend(messages)
         if self.warnings_errors_dialog is not None:
             self.warnings_errors_dialog.set_messages(self.warning_error_messages)
+
+    def marked_for_deletion_paths(self) -> list[Path]:
+        """Return currently loaded images marked for deletion, in list order."""
+        return [
+            path
+            for path in self.picture_paths
+            if self.status_by_path.get(path) == "delete"
+        ]
+
+    def update_move_to_trash_button_state(self) -> None:
+        """Update the trash button text/enabled state from current marks."""
+        button = getattr(self, "btn_move_to_trash", None)
+        if button is None:
+            return
+
+        count = len(self.marked_for_deletion_paths())
+        if count:
+            button.setText(f"🗑 Move {count} to trash")
+            button.setToolTip(f"Move {count} picture(s) marked for deletion to the system Trash")
+        else:
+            button.setText("🗑 Move to trash")
+            button.setToolTip("Mark one or more pictures for deletion first, then move them to the system Trash")
+        button.setEnabled((not self.scan_is_running) and count > 0)
 
     def show_warnings_errors_window(self) -> None:
         """Open a copyable warning/error list window."""
@@ -2121,6 +2236,290 @@ class PictureExifCompareApp:
         self.refresh_fullscreen_window_if_open()
         self.message("Locked picture cleared.")
 
+    def create_picture_items_after_actual_delete(
+        self,
+        paths: list[Path],
+        statuses: dict[Path, str],
+    ) -> list[QTreeWidgetItem]:
+        """Create table rows after files were actually removed from the list.
+
+        This phase is deliberately non-cancelable.  The file move to Trash has
+        already happened, so leaving the old tree visible with deleted paths
+        would be misleading.
+        """
+        if not self.duplicate_view_enabled:
+            return self.create_flat_picture_items_after_actual_delete(paths, statuses)
+        return self.create_grouped_picture_items_after_actual_delete(paths, statuses)
+
+    def create_flat_picture_items_after_actual_delete(
+        self,
+        paths: list[Path],
+        statuses: dict[Path, str],
+    ) -> list[QTreeWidgetItem]:
+        total = len(paths)
+        items: list[QTreeWidgetItem] = []
+        self.begin_non_cancelable_final_phase("Preparing list after trash move...")
+        for index, path in enumerate(paths, start=1):
+            self.update_non_cancelable_progress(
+                index - 1,
+                total,
+                f"Preparing list after trash move {index}/{total} picture(s)...",
+                path,
+            )
+            items.append(
+                self.create_picture_row_item(
+                    path,
+                    statuses.get(path, ""),
+                    checkable=False,
+                    group_key="",
+                    group_kind=GROUP_KIND_UNIQUE_CHILD,
+                )
+            )
+            self.update_non_cancelable_progress(
+                index,
+                total,
+                f"Preparing list after trash move {index}/{total} picture(s)...",
+                path,
+            )
+        return items
+
+    def build_metadata_date_groups_after_actual_delete(
+        self,
+        paths: list[Path],
+    ) -> tuple[list[MetadataDateGroup], list[Path]]:
+        """Group remaining paths after actual deletion with non-cancelable progress."""
+        total = len(paths)
+        grouped: "OrderedDict[str, list[Path]]" = OrderedDict()
+        display_dates: dict[str, str] = {}
+        no_date_paths: list[Path] = []
+
+        self.begin_non_cancelable_final_phase("Regrouping remaining images...")
+        for index, path in enumerate(paths, start=1):
+            self.update_non_cancelable_progress(
+                index - 1,
+                total,
+                f"Regrouping remaining images {index}/{total} picture(s)...",
+                path,
+            )
+            key = metadata_date_group_key(path)
+            if key:
+                grouped.setdefault(key, []).append(path)
+                display_dates.setdefault(key, metadata_date_display_text(path))
+            else:
+                no_date_paths.append(path)
+            self.update_non_cancelable_progress(
+                index,
+                total,
+                f"Regrouping remaining images {index}/{total} picture(s)...",
+                path,
+            )
+
+        duplicate_groups: list[MetadataDateGroup] = []
+        unique_paths: list[Path] = list(no_date_paths)
+        for key, group_paths in grouped.items():
+            if len(group_paths) >= 2:
+                duplicate_groups.append(
+                    MetadataDateGroup(
+                        key=key,
+                        display_date=display_dates.get(key, key),
+                        paths=group_paths,
+                    )
+                )
+            else:
+                unique_paths.extend(group_paths)
+        return duplicate_groups, unique_paths
+
+    def create_grouped_picture_items_after_actual_delete(
+        self,
+        paths: list[Path],
+        statuses: dict[Path, str],
+    ) -> list[QTreeWidgetItem]:
+        """Create duplicate-group rows after actual deletion.
+
+        Because deleted files are removed from *paths*, any old duplicate group
+        with only one remaining image automatically becomes a Unique images row.
+        """
+        duplicate_groups, unique_paths = self.build_metadata_date_groups_after_actual_delete(paths)
+        self.protect_duplicate_groups_from_all_delete(duplicate_groups, statuses)
+
+        total = len(paths)
+        items: list[QTreeWidgetItem] = []
+        done = 0
+        self.begin_non_cancelable_final_phase("Preparing duplicate groups after trash move...")
+
+        for group_index, group in enumerate(duplicate_groups):
+            group_item = self.create_duplicate_group_header_item(group, statuses)
+            for path in group.paths:
+                self.update_non_cancelable_progress(
+                    done,
+                    total,
+                    f"Preparing duplicate groups after trash move {done}/{total} picture(s)...",
+                    path,
+                )
+                child = self.create_picture_row_item(
+                    path,
+                    statuses.get(path, ""),
+                    checkable=True,
+                    group_key=group.key,
+                )
+                group_item.addChild(child)
+                done += 1
+            group_item.setExpanded(True)
+            items.append(group_item)
+            if group_index < len(duplicate_groups) - 1 or unique_paths:
+                items.append(self.create_separator_item())
+
+        if unique_paths:
+            title = f"Unique images — {len(unique_paths)} image(s) with no matching metadata date"
+            if not duplicate_groups:
+                title = f"No duplicate metadata-date groups found — {len(unique_paths)} unique image(s)"
+            unique_item = self.create_section_header_item(title, GROUP_KIND_UNIQUE_HEADER)
+            for path in unique_paths:
+                self.update_non_cancelable_progress(
+                    done,
+                    total,
+                    f"Preparing unique images after trash move {done}/{total} picture(s)...",
+                    path,
+                )
+                child = self.create_picture_row_item(
+                    path,
+                    statuses.get(path, ""),
+                    checkable=False,
+                    group_key="",
+                    group_kind=GROUP_KIND_UNIQUE_CHILD,
+                )
+                unique_item.addChild(child)
+                done += 1
+            unique_item.setExpanded(True)
+            items.append(unique_item)
+
+        self.update_non_cancelable_progress(total, total, "Finished preparing list after trash move.")
+        return items
+
+    def move_marked_pictures_to_trash(self) -> None:
+        """Move all pictures marked for deletion to the system Trash."""
+        if self.scan_is_running:
+            return
+
+        marked_paths = self.marked_for_deletion_paths()
+        if not marked_paths:
+            QMessageBox.information(
+                self.window,
+                "No pictures marked for deletion",
+                "Mark one or more pictures for deletion first.",
+            )
+            return
+
+        preview_names = "\n".join(f"• {path.name}" for path in marked_paths[:12])
+        if len(marked_paths) > 12:
+            preview_names += f"\n• ...and {len(marked_paths) - 12} more"
+
+        reply = QMessageBox.question(
+            self.window,
+            "Move marked pictures to Trash?",
+            (
+                f"Move {len(marked_paths)} picture(s) marked for deletion to the system Trash?\n\n"
+                f"{preview_names}\n\n"
+                "This does not permanently delete the files, but it removes them from this list."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        old_paths = list(self.picture_paths)
+        old_statuses = dict(self.status_by_path)
+        old_locked_path = self.locked_path
+        old_current_path = self.current_path
+
+        successes: list[Path] = []
+        failures: list[str] = []
+
+        self.begin_non_cancelable_final_phase("Moving marked pictures to Trash...")
+        total = len(marked_paths)
+        for index, path in enumerate(marked_paths, start=1):
+            self.update_non_cancelable_progress(
+                index - 1,
+                total,
+                f"Moving marked picture {index}/{total} to Trash...",
+                path,
+            )
+            result = move_path_to_trash(path)
+            if result.success:
+                successes.append(path)
+            else:
+                failures.append(f"{path}: {result.message}")
+            self.update_non_cancelable_progress(
+                index,
+                total,
+                f"Moving marked picture {index}/{total} to Trash...",
+                path,
+            )
+
+        if failures:
+            self.add_warning_error_messages([f"Trash move failed: {message}" for message in failures])
+
+        if not successes:
+            self.set_scan_controls_idle()
+            QMessageBox.warning(
+                self.window,
+                "Could not move pictures to Trash",
+                "None of the marked pictures could be moved to Trash.\n\n"
+                "Open Files > Show warnings/errors... for details.",
+            )
+            return
+
+        deleted_set = set(successes)
+        remaining_paths = [path for path in old_paths if path not in deleted_set]
+        remaining_statuses = {
+            path: status
+            for path, status in old_statuses.items()
+            if path in remaining_paths and status
+        }
+
+        self.picture_paths = remaining_paths
+        self.status_by_path = remaining_statuses
+        self.locked_path = old_locked_path if old_locked_path in remaining_paths else None
+        self.current_path = old_current_path if old_current_path in remaining_paths else None
+
+        items = self.create_picture_items_after_actual_delete(self.picture_paths, self.status_by_path)
+        self.replace_picture_table_with_progress(items)
+
+        if self.locked_path is None:
+            clear_label(self.label_locked, "No locked image")
+            self.text_locked.setPlainText("")
+        else:
+            self.refresh_locked_picture_with_progress()
+
+        preferred_path = self.current_path
+        selected_item = self.find_item_for_path_with_progress(preferred_path)
+        if selected_item is None and self.picture_paths:
+            selected_item = self.first_picture_item()
+        self.set_current_item_with_progress(
+            selected_item,
+            "Loading picture after trash move...",
+        )
+
+        if not self.picture_paths:
+            self.current_path = None
+            clear_label(self.label_selected, "No selected image")
+            self.text_selected.setPlainText("")
+
+        self.update_persistent_statistics(
+            metadata_date_count=len(self.picture_paths),
+            read_error_count=self.last_read_error_count,
+        )
+        self.update_move_to_trash_button_state()
+        self.refresh_fullscreen_window_if_open()
+        self.set_scan_controls_idle()
+        self.show_persistent_statistics_in_statusbar()
+
+        message = f"Moved {len(successes)} picture(s) to Trash."
+        if failures:
+            message += f" {len(failures)} picture(s) failed; see warnings/errors."
+        self.show_temporary_message_then_statistics(message, 6000)
+
     def set_selected_status(self, status: str) -> None:
         """Apply a keep/delete mark to the currently selected image."""
         if self.current_path is None:
@@ -2216,6 +2615,7 @@ class PictureExifCompareApp:
             self.status_by_path.pop(path, None)
 
         self.update_visible_items_for_path(path, status)
+        self.update_move_to_trash_button_state()
         if refresh_fullscreen:
             self.refresh_fullscreen_window_if_open()
         self.message(f"Marked {path.name} as {status or 'unmarked'}.")
