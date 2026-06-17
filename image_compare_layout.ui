@@ -1,0 +1,452 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<ui version="4.0">
+ <class>ImageCompareMainWindow</class>
+ <widget class="QMainWindow" name="ImageCompareMainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1400</width>
+    <height>897</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Picture Compare</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QGridLayout" name="mainGridLayout">
+    <property name="leftMargin">
+     <number>8</number>
+    </property>
+    <property name="topMargin">
+     <number>8</number>
+    </property>
+    <property name="rightMargin">
+     <number>8</number>
+    </property>
+    <property name="bottomMargin">
+     <number>8</number>
+    </property>
+    <property name="spacing">
+     <number>8</number>
+    </property>
+    <item row="0" column="0">
+     <widget class="QGroupBox" name="groupPictures">
+      <property name="title">
+       <string>Pictures</string>
+      </property>
+      <layout class="QVBoxLayout" name="picturesLayout">
+       <item>
+        <layout class="QHBoxLayout" name="pictureListTopButtonsLayout">
+         <item>
+          <widget class="QPushButton" name="btnLoadPictures">
+           <property name="text">
+            <string>Load pictures</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnAppendImages">
+           <property name="toolTip">
+            <string>Add qualifying images to the current list without clearing it.</string>
+           </property>
+           <property name="text">
+            <string>Append images to list</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnAppendImageList">
+           <property name="toolTip">
+            <string>Append a saved JSON image list to the current list without clearing it.</string>
+           </property>
+           <property name="text">
+            <string>Append list</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnSaveImageList">
+           <property name="toolTip">
+            <string>Save the current image list to a JSON file.</string>
+           </property>
+           <property name="text">
+            <string>Save image list</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnLoadImageList">
+           <property name="toolTip">
+            <string>Load a saved image list from JSON.</string>
+           </property>
+           <property name="text">
+            <string>Load image list</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnSearchDuplicates">
+           <property name="toolTip">
+            <string>Find possible duplicate images by matching embedded metadata dates.</string>
+           </property>
+           <property name="text">
+            <string>Search duplicates</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QTreeWidget" name="listPictures">
+         <property name="alternatingRowColors">
+          <bool>true</bool>
+         </property>
+         <property name="selectionMode">
+          <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
+         </property>
+         <property name="rootIsDecorated">
+          <bool>false</bool>
+         </property>
+         <property name="uniformRowHeights">
+          <bool>true</bool>
+         </property>
+         <property name="itemsExpandable">
+          <bool>false</bool>
+         </property>
+         <property name="allColumnsShowFocus">
+          <bool>true</bool>
+         </property>
+         <column>
+          <property name="text">
+           <string>Name</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Width x Height</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Size</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Metadata date</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>File date</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Folder</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="scanProgressLayout">
+         <item>
+          <widget class="QProgressBar" name="progressScan">
+           <property name="visible">
+            <bool>false</bool>
+           </property>
+           <property name="value">
+            <number>0</number>
+           </property>
+           <property name="textVisible">
+            <bool>true</bool>
+           </property>
+           <property name="format">
+            <string>Ready</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnPauseScan">
+           <property name="visible">
+            <bool>false</bool>
+           </property>
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>80</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Pause</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnCancelScan">
+           <property name="visible">
+            <bool>false</bool>
+           </property>
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>80</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Cancel</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="pictureActionButtonsLayout">
+         <item>
+          <widget class="QPushButton" name="btnKeepPicture">
+           <property name="text">
+            <string>Keep picture</string>
+           </property>
+          </widget>
+         </item>
+
+         <item>
+          <widget class="QPushButton" name="btnClearKeepMark">
+           <property name="toolTip">
+            <string>Clear the keep mark from the selected picture so it can be marked for deletion again.</string>
+           </property>
+           <property name="text">
+            <string>Clear keep</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnMarkForDeletion">
+           <property name="text">
+            <string>Mark for deletion</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item row="0" column="1">
+     <widget class="QGroupBox" name="groupLockedImage">
+      <property name="title">
+       <string>Locked/default picture</string>
+      </property>
+      <layout class="QVBoxLayout" name="lockedImageLayout">
+       <item>
+        <widget class="QLabel" name="labelLockedImage">
+         <property name="minimumSize">
+          <size>
+           <width>500</width>
+           <height>300</height>
+          </size>
+         </property>
+         <property name="frameShape">
+          <enum>QFrame::Shape::StyledPanel</enum>
+         </property>
+         <property name="frameShadow">
+          <enum>QFrame::Shadow::Sunken</enum>
+         </property>
+         <property name="text">
+          <string>Locked image preview</string>
+         </property>
+         <property name="scaledContents">
+          <bool>false</bool>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignmentFlag::AlignCenter</set>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="lockedButtonsLayout">
+         <item>
+          <widget class="QPushButton" name="btnLockSelected">
+           <property name="text">
+            <string>Lock selected picture as default</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnClearLocked">
+           <property name="text">
+            <string>Clear locked picture</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item row="1" column="1">
+     <widget class="QGroupBox" name="groupSelectedImage">
+      <property name="title">
+       <string>Currently selected picture</string>
+      </property>
+      <layout class="QVBoxLayout" name="selectedImageLayout">
+       <item>
+        <widget class="QLabel" name="labelSelectedImage">
+         <property name="minimumSize">
+          <size>
+           <width>500</width>
+           <height>300</height>
+          </size>
+         </property>
+         <property name="frameShape">
+          <enum>QFrame::Shape::StyledPanel</enum>
+         </property>
+         <property name="frameShadow">
+          <enum>QFrame::Shadow::Sunken</enum>
+         </property>
+         <property name="text">
+          <string>Selected image preview</string>
+         </property>
+         <property name="scaledContents">
+          <bool>false</bool>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignmentFlag::AlignCenter</set>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item row="1" column="0">
+     <widget class="QGroupBox" name="groupCompareInfo">
+      <property name="title">
+       <string>Compare EXIF and file info</string>
+      </property>
+      <layout class="QVBoxLayout" name="compareInfoOuterLayout">
+       <item>
+        <layout class="QHBoxLayout" name="compareInfoLayout">
+         <item>
+          <layout class="QVBoxLayout" name="lockedInfoLayout">
+           <item>
+            <widget class="QLabel" name="labelLockedInfoTitle">
+             <property name="text">
+              <string>Locked picture info</string>
+             </property>
+             <property name="alignment">
+              <set>Qt::AlignmentFlag::AlignCenter</set>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QTextEdit" name="textLockedInfo">
+             <property name="readOnly">
+              <bool>true</bool>
+             </property>
+             <property name="placeholderText">
+              <string>Locked image EXIF and file info...</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QVBoxLayout" name="selectedInfoLayout">
+           <item>
+            <widget class="QLabel" name="labelSelectedInfoTitle">
+             <property name="text">
+              <string>Selected picture info</string>
+             </property>
+             <property name="alignment">
+              <set>Qt::AlignmentFlag::AlignCenter</set>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QTextEdit" name="textSelectedInfo">
+             <property name="readOnly">
+              <bool>true</bool>
+             </property>
+             <property name="placeholderText">
+              <string>Selected image EXIF and file info...</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelScanStats">
+         <property name="text">
+          <string>No scan statistics yet.</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="textInteractionFlags">
+          <set>Qt::TextSelectableByMouse</set>
+         </property>
+         <property name="toolTip">
+          <string>Persistent scan/list statistics. File dates do not count as metadata dates.</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1400</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFiles">
+    <property name="title">
+     <string>Files</string>
+    </property>
+    <addaction name="actionSaveList" />
+    <addaction name="actionAppendImages" />
+    <addaction name="actionLoadList" />
+    <addaction name="separator" />
+    <addaction name="actionQuit" />
+   </widget>
+   <addaction name="menuFiles" />
+  </widget>
+  <widget class="QStatusBar" name="statusbar" />
+  <action name="actionSaveList">
+   <property name="text">
+    <string>Save list...</string>
+   </property>
+  </action>
+  <action name="actionAppendImages">
+   <property name="text">
+    <string>Append images to list...</string>
+   </property>
+  </action>
+  <action name="actionLoadList">
+   <property name="text">
+    <string>Load list...</string>
+   </property>
+  </action>
+  <action name="actionQuit">
+   <property name="text">
+    <string>Quit</string>
+   </property>
+  </action>
+ </widget>
+ <resources />
+ <connections />
+</ui>
