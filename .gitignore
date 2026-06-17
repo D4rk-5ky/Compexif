@@ -1,0 +1,19 @@
+cd "/home/darkyere/Source/Image Exiff compare V.21"
+
+cat >> .gitignore <<'EOF'
+
+# PyInstaller build output
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+EOF
+
+kk
