@@ -11,7 +11,7 @@ count as metadata and does not make a file qualify.
 The loader also supports progress reporting:
 1. Count every file encountered in the requested folders/files.
 2. Count supported image files that need metadata-date inspection.
-3. Read metadata from those supported image files and report progress.
+3. Read metadata from those supported image files in background threads and report progress.
 """
 
 from __future__ import annotations
@@ -21,7 +21,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from image_metadata import check_supported_metadata_date, has_supported_metadata_date
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+
+from image_metadata import MetadataDateCheckResult, check_supported_metadata_date, has_supported_metadata_date
+from threaded_work import normalized_worker_count
 
 
 IMAGE_EXTENSIONS = {
@@ -154,6 +157,7 @@ def iter_image_files(
     require_metadata_date: bool = True,
     *,
     require_metadata: bool | None = None,
+    max_workers: int | None = None,
 ) -> Iterable[Path]:
     """Yield picture files from *folder*.
 
@@ -171,6 +175,7 @@ def iter_image_files(
         [folder],
         recursive=recursive,
         require_metadata_date=require_metadata_date,
+        max_workers=max_workers,
     )
     yield from result.picture_paths
 
@@ -183,6 +188,7 @@ def load_picture_paths_with_progress(
     warning_callback: WarningCallback | None = None,
     *,
     require_metadata: bool | None = None,
+    max_workers: int | None = None,
 ) -> PictureScanResult:
     """Load qualifying picture files from files/folders with progress support.
 
@@ -222,34 +228,127 @@ def load_picture_paths_with_progress(
     if progress_callback is not None:
         progress_callback(0, candidate_count, None, 0, total_files_seen, read_error_count)
 
-    for index, path in enumerate(candidates, start=1):
-        if not path.is_file():
-            # The file may have disappeared between the counting pass and the
-            # metadata-reading pass.
-            skipped_without_metadata_date += 1
-            read_error_count += 1
-            record_warning_errors(path, ["File disappeared before metadata could be read."])
-        elif not require_metadata_date:
-            found.append(path)
-        else:
-            metadata_check = check_supported_metadata_date(path)
-            read_error_count += metadata_check.error_count
-            record_warning_errors(path, list(metadata_check.errors))
-            if metadata_check.has_metadata_date:
-                found.append(path)
-                metadata_date_count += 1
-            else:
+    if not require_metadata_date:
+        found = list(candidates)
+        metadata_date_count = len(found)
+        for index, path in enumerate(candidates, start=1):
+            if not path.is_file():
                 skipped_without_metadata_date += 1
+                read_error_count += 1
+                record_warning_errors(path, ["File disappeared before it could be loaded."])
+            if progress_callback is not None:
+                progress_callback(
+                    index,
+                    candidate_count,
+                    path,
+                    len(found),
+                    total_files_seen,
+                    read_error_count,
+                )
+    else:
+        found_set: set[Path] = set()
+        worker_count = normalized_worker_count(max_workers, candidate_count)
 
-        if progress_callback is not None:
-            progress_callback(
-                index,
-                candidate_count,
-                path,
-                len(found),
-                total_files_seen,
-                read_error_count,
+        def check_worker(path: Path) -> MetadataDateCheckResult:
+            return check_supported_metadata_date(path)
+
+        executor: ThreadPoolExecutor | None = None
+        pending: dict[Future[MetadataDateCheckResult], Path] = {}
+        next_index = 0
+        done_count = 0
+        max_pending = max(worker_count, worker_count * 2)
+
+        def submit_next() -> bool:
+            nonlocal next_index
+            if next_index >= candidate_count:
+                return False
+            path = candidates[next_index]
+            pending[executor.submit(check_worker, path)] = path  # type: ignore[union-attr]
+            next_index += 1
+            return True
+
+        try:
+            executor = ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="compexif-scan",
             )
+            for _ in range(min(candidate_count, max_pending)):
+                submit_next()
+
+            while pending:
+                completed, _not_done = wait(
+                    pending,
+                    timeout=0.10,
+                    return_when=FIRST_COMPLETED,
+                )
+
+                if not completed:
+                    # Give the GUI a chance to process Pause/Cancel while worker
+                    # threads are waiting on slow disks/NAS/image reads.
+                    if progress_callback is not None:
+                        progress_callback(
+                            done_count,
+                            candidate_count,
+                            None,
+                            metadata_date_count,
+                            total_files_seen,
+                            read_error_count,
+                        )
+                    continue
+
+                for future in completed:
+                    path = pending.pop(future)
+
+                    if not path.is_file():
+                        skipped_without_metadata_date += 1
+                        read_error_count += 1
+                        record_warning_errors(path, ["File disappeared before metadata could be read."])
+                    else:
+                        try:
+                            metadata_check = future.result()
+                        except Exception as exc:
+                            metadata_check = MetadataDateCheckResult(
+                                metadata_datetime=None,
+                                error_count=1,
+                                errors=(f"Could not read metadata date in background thread: {exc}",),
+                            )
+
+                        read_error_count += metadata_check.error_count
+                        record_warning_errors(path, list(metadata_check.errors))
+                        if metadata_check.has_metadata_date:
+                            found_set.add(path)
+                            metadata_date_count += 1
+                        else:
+                            skipped_without_metadata_date += 1
+
+                    done_count += 1
+                    if progress_callback is not None:
+                        progress_callback(
+                            done_count,
+                            candidate_count,
+                            path,
+                            metadata_date_count,
+                            total_files_seen,
+                            read_error_count,
+                        )
+
+                    while len(pending) < max_pending and submit_next():
+                        pass
+
+        except BaseException:
+            for future in pending:
+                future.cancel()
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+                executor = None
+            raise
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
+
+        # Keep the original discovery order even though metadata was read by
+        # many threads and completed out of order.
+        found = [path for path in candidates if path in found_set]
 
     return PictureScanResult(
         picture_paths=list(dict.fromkeys(found)),
@@ -268,6 +367,7 @@ def load_picture_paths(
     require_metadata_date: bool = True,
     *,
     require_metadata: bool | None = None,
+    max_workers: int | None = None,
 ) -> list[Path]:
     """Load all qualifying picture files from files/folders and de-duplicate them.
 
@@ -280,5 +380,6 @@ def load_picture_paths(
         paths,
         recursive=recursive,
         require_metadata_date=require_metadata_date,
+        max_workers=max_workers,
     )
     return result.picture_paths

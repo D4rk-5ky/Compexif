@@ -82,6 +82,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Load all supported image files, even when they do not contain an embedded metadata date.",
     )
+    parser.add_argument(
+        "--metadata-workers",
+        type=int,
+        default=None,
+        help="Number of worker threads used for metadata/date scanning, image-detail prefetching, and duplicate search. Default: automatic, capped at 8. Can also be set with COMPEXIF_METADATA_WORKERS.",
+    )
     return parser.parse_args(argv)
 
 
@@ -102,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             initial_paths=initial_paths,
             sort_mode=args.sort,
             require_metadata_date=not args.include_without_metadata_date,
+            metadata_worker_count=args.metadata_workers,
         )
         if not app_icon.isNull():
             exif_app.window.setWindowIcon(app_icon)

@@ -47,9 +47,14 @@ from duplicate_grouping import (
 from image_display import clear_label, show_picture_on_label
 from image_fullscreen import FullscreenImageWindow, PreviewFullscreenButton
 from image_metadata import build_info_text, check_supported_metadata_date
+from metadata_threading import (
+    build_metadata_date_groups_threaded,
+    prefetch_picture_summaries_threaded,
+)
 from picture_list_columns import DEFAULT_COLUMN_WIDTHS, HEADERS, PictureColumn, row_values_for_path
 from picture_list_io import PictureListDocument, PictureListEntry, read_picture_list, write_picture_list
 from picture_loader import is_image_file, load_picture_paths_with_progress
+from threaded_work import default_worker_count, run_path_work_threaded
 from warnings_errors_dialog import WarningsErrorsDialog
 from trash_delete import move_path_to_trash
 from picture_sorting import (
@@ -87,9 +92,11 @@ class PictureExifCompareApp:
         sort_mode: SortMode | str | None = None,
         require_metadata_date: bool = True,
         require_metadata: bool | None = None,
+        metadata_worker_count: int | None = None,
     ) -> None:
         self.ui_path = ui_path
         self.sort_mode = sort_mode
+        self.metadata_worker_count = default_worker_count() if metadata_worker_count is None else max(1, int(metadata_worker_count))
         if require_metadata is not None:
             require_metadata_date = require_metadata
         self.require_metadata_date = require_metadata_date
@@ -466,6 +473,43 @@ class PictureExifCompareApp:
             self.progress_scan.setToolTip(str(current_path))
         self.message(text, 0)
         self._handle_pause_or_cancel()
+
+    def update_threaded_metadata_progress(
+        self,
+        done: int,
+        total: int,
+        current_path: Path | None,
+        phase: str = "Reading image details in parallel",
+    ) -> None:
+        """Update progress for threaded metadata/summary work."""
+        self._handle_pause_or_cancel()
+
+        self.progress_scan.setRange(0, max(total, 1))
+        self.progress_scan.setValue(done)
+        text = f"{phase} {done}/{total} picture(s) · {self.metadata_worker_count} thread(s)..."
+        self.progress_scan.setFormat(text)
+        if current_path is not None:
+            self.progress_scan.setToolTip(str(current_path))
+        self.message(text, 0)
+        self._handle_pause_or_cancel()
+
+    def prefetch_picture_summaries_with_progress(
+        self,
+        paths: list[Path],
+        phase: str = "Reading image details in parallel",
+    ) -> None:
+        """Read/cache image details in worker threads before sort/list rebuild."""
+        if not paths:
+            return
+
+        self.set_scan_controls_running(f"{phase}...")
+        warnings = prefetch_picture_summaries_threaded(
+            list(dict.fromkeys(paths)),
+            max_workers=self.metadata_worker_count,
+            progress_callback=self.update_threaded_metadata_progress,
+            phase=phase,
+        )
+        self.add_warning_error_messages(warnings)
 
     def update_non_cancelable_progress(
         self,
@@ -1051,6 +1095,10 @@ class PictureExifCompareApp:
         old_statuses = dict(self.status_by_path)
 
         try:
+            self.prefetch_picture_summaries_with_progress(
+                list(self.picture_paths),
+                f"Reading image details before sorting by {column_name}",
+            )
             self.show_busy_progress(f"Sorting by {column_name} ({order_text})...")
             sorted_paths = self.sort_paths_for_active_order(list(self.picture_paths))
             self._handle_pause_or_cancel()
@@ -1131,8 +1179,13 @@ class PictureExifCompareApp:
                 require_metadata_date=self.require_metadata_date,
                 progress_callback=self.update_scan_progress,
                 warning_callback=self.add_warning_error_messages,
+                max_workers=self.metadata_worker_count,
             )
 
+            self.prefetch_picture_summaries_with_progress(
+                scan_result.picture_paths,
+                "Reading image details before sorting",
+            )
             self.show_busy_progress("Sorting matching pictures...")
             found = self.sort_paths_for_active_order(scan_result.picture_paths)
             self._handle_pause_or_cancel()
@@ -1226,12 +1279,17 @@ class PictureExifCompareApp:
                 require_metadata_date=self.require_metadata_date,
                 progress_callback=self.update_scan_progress,
                 warning_callback=self.add_warning_error_messages,
+                max_workers=self.metadata_worker_count,
             )
 
             existing_paths = set(old_paths)
             new_paths = [path for path in scan_result.picture_paths if path not in existing_paths]
             duplicate_count = len(scan_result.picture_paths) - len(new_paths)
 
+            self.prefetch_picture_summaries_with_progress(
+                old_paths + new_paths,
+                "Reading image details before sorting append",
+            )
             self.show_busy_progress("Sorting appended pictures...")
             combined_paths = self.sort_paths_for_active_order(old_paths + new_paths)
             combined_statuses = {
@@ -1417,6 +1475,10 @@ class PictureExifCompareApp:
             new_paths = [path for path in loaded_paths if path not in existing_paths]
             already_in_list_count = len(loaded_paths) - len(new_paths)
 
+            self.prefetch_picture_summaries_with_progress(
+                old_paths + new_paths,
+                "Reading image details before sorting appended list",
+            )
             self.show_busy_progress("Sorting appended image list...")
             combined_paths = self.sort_paths_for_active_order(old_paths + new_paths)
             combined_statuses = {
@@ -1551,6 +1613,10 @@ class PictureExifCompareApp:
                 metadata_date_count,
                 read_error_count,
             ) = self.validate_loaded_picture_list_with_progress(document)
+            self.prefetch_picture_summaries_with_progress(
+                paths,
+                "Reading image details before building loaded list",
+            )
             # Loading a saved list returns to the normal flat list. Press
             # "Search duplicates" to group matching metadata dates.
             self.duplicate_view_enabled = False
@@ -1629,20 +1695,20 @@ class PictureExifCompareApp:
         metadata_date_count = 0
         read_error_count = 0
         seen: set[Path] = set()
+        candidates: list[tuple[Path, str]] = []
 
-        self.set_scan_controls_running("Checking saved list...")
+        self.set_scan_controls_running("Checking saved list paths...")
         self.progress_scan.setRange(0, max(total, 1))
         self.progress_scan.setValue(0)
 
+        # First pass is cheap: de-duplicate exact paths and reject missing or
+        # unsupported files. The expensive metadata-date check is threaded below.
         for index, entry in enumerate(entries, start=1):
             self._handle_pause_or_cancel()
             path = entry.path.expanduser().resolve()
             text = (
-                f"Checking saved list {index}/{total} · "
-                f"{metadata_date_count} had metadata date · "
-                f"{skipped_missing} missing · {skipped_unsupported} unsupported · "
-                f"{skipped_without_metadata_date} without metadata date · "
-                f"{read_error_count} read warning/error(s)"
+                f"Checking saved list paths {index}/{total} · "
+                f"{skipped_missing} missing · {skipped_unsupported} unsupported"
             )
             self.progress_scan.setValue(index - 1)
             self.progress_scan.setFormat(text)
@@ -1670,25 +1736,82 @@ class PictureExifCompareApp:
                 skipped_unsupported += 1
                 read_error_count += 1
                 self.add_warning_error_messages([f"{path}: Saved list entry is not a supported image file."])
-            elif self.require_metadata_date:
-                metadata_check = check_supported_metadata_date(path)
-                read_error_count += metadata_check.error_count
-                self.add_warning_error_messages([f"{path}: {message}" for message in metadata_check.errors])
-                if not metadata_check.has_metadata_date:
-                    skipped_without_metadata_date += 1
-                else:
-                    metadata_date_count += 1
-                    seen.add(path)
-                    paths.append(path)
-                    statuses[path] = entry.status
             else:
                 seen.add(path)
-                paths.append(path)
-                statuses[path] = entry.status
-                metadata_date_count += 1
+                candidates.append((path, entry.status))
 
             self.progress_scan.setValue(index)
             self._handle_pause_or_cancel()
+
+        if not self.require_metadata_date:
+            for path, status in candidates:
+                paths.append(path)
+                statuses[path] = status
+                metadata_date_count += 1
+        else:
+            candidate_paths = [path for path, _status in candidates]
+            status_by_candidate = {path: status for path, status in candidates}
+
+            def validate_progress(done: int, worker_total: int, current_path: Path | None, phase: str) -> None:
+                self._handle_pause_or_cancel()
+                self.progress_scan.setRange(0, max(worker_total, 1))
+                self.progress_scan.setValue(done)
+                text = (
+                    f"Checking saved list metadata {done}/{worker_total} · "
+                    f"{metadata_date_count} had metadata date · "
+                    f"{skipped_missing} missing · {skipped_unsupported} unsupported · "
+                    f"{skipped_without_metadata_date} without metadata date · "
+                    f"{read_error_count} read warning/error(s) · "
+                    f"{self.metadata_worker_count} thread(s)"
+                )
+                self.progress_scan.setFormat(text)
+                if current_path is not None:
+                    self.progress_scan.setToolTip(str(current_path))
+                self.set_stats_text(
+                    self.format_statistics_text(
+                        walked_over=total,
+                        metadata_date_count=metadata_date_count,
+                        duplicate_file_count=None,
+                        unique_count=None,
+                        read_error_count=read_error_count,
+                        skipped_without_metadata_date=skipped_without_metadata_date,
+                    )
+                )
+                self.message(text, 0)
+                self._handle_pause_or_cancel()
+
+            results = run_path_work_threaded(
+                candidate_paths,
+                check_supported_metadata_date,
+                max_workers=self.metadata_worker_count,
+                progress_callback=validate_progress,
+                phase="Checking saved list metadata",
+            )
+
+            accepted: set[Path] = set()
+            for path, result in results:
+                if isinstance(result, BaseException):
+                    read_error_count += 1
+                    skipped_without_metadata_date += 1
+                    self.add_warning_error_messages([
+                        f"{path}: Could not read metadata date in background thread: {result}"
+                    ])
+                    continue
+
+                read_error_count += result.error_count
+                self.add_warning_error_messages([f"{path}: {message}" for message in result.errors])
+                if not result.has_metadata_date:
+                    skipped_without_metadata_date += 1
+                else:
+                    metadata_date_count += 1
+                    accepted.add(path)
+
+            # Keep the saved-list order even though metadata was checked in
+            # parallel and completed out of order.
+            for path in candidate_paths:
+                if path in accepted:
+                    paths.append(path)
+                    statuses[path] = status_by_candidate.get(path, "")
 
         final_text = (
             f"Checked saved list {total}/{total} · "
@@ -1762,61 +1885,27 @@ class PictureExifCompareApp:
         paths: list[Path],
         statuses: dict[Path, str] | None = None,
     ) -> tuple[list[MetadataDateGroup], list[Path], list[Path]]:
-        """Find duplicate metadata-date groups with visible progress.
+        """Find duplicate metadata-date groups with threaded metadata reads.
 
-        This compares only embedded metadata dates. Filesystem modified/created
-        dates are not used. A file that is merely *marked* for deletion is still
-        kept inside its duplicate group. The last remaining image only moves to
-        Unique images after files are actually removed from the list, for example
-        after a future real delete/remove operation.
-
-        The third return value is kept for compatibility with older controller
-        code, but it is intentionally empty now because marked-for-deletion rows
-        are no longer split into a separate section.
+        Threads read the metadata-date key for each image, but the actual
+        grouping is done after all thread results are merged. That means an
+        image processed by worker thread 1 can still be grouped with an image
+        processed by worker thread 8 if the embedded metadata date matches.
         """
         del statuses  # marks do not affect duplicate grouping
-        total = len(paths)
-        grouped: "OrderedDict[str, list[Path]]" = OrderedDict()
-        display_dates: dict[str, str] = {}
-        no_date_paths: list[Path] = []
 
-        self.set_scan_controls_running("Searching duplicate metadata dates...")
-        self.progress_scan.setRange(0, max(total, 1))
-        self.progress_scan.setValue(0)
+        self.set_scan_controls_running("Searching duplicate metadata dates in parallel...")
+        duplicate_groups, unique_paths, warnings = build_metadata_date_groups_threaded(
+            paths,
+            max_workers=self.metadata_worker_count,
+            progress_callback=self.update_threaded_metadata_progress,
+            phase="Searching duplicate metadata dates in parallel",
+        )
+        self.add_warning_error_messages(warnings)
 
-        for index, path in enumerate(paths, start=1):
-            self._handle_pause_or_cancel()
-            text = f"Searching duplicate metadata dates {index}/{total} picture(s)..."
-            self.progress_scan.setValue(index - 1)
-            self.progress_scan.setFormat(text)
-            self.progress_scan.setToolTip(str(path))
-            self.message(text, 0)
-
-            key = metadata_date_group_key(path)
-            if key:
-                grouped.setdefault(key, []).append(path)
-                display_dates.setdefault(key, metadata_date_display_text(path))
-            else:
-                no_date_paths.append(path)
-
-            self.progress_scan.setValue(index)
-            self._handle_pause_or_cancel()
-
-        duplicate_groups: list[MetadataDateGroup] = []
-        unique_paths: list[Path] = list(no_date_paths)
-
-        for key, group_paths in grouped.items():
-            if len(group_paths) >= 2:
-                duplicate_groups.append(
-                    MetadataDateGroup(
-                        key=key,
-                        display_date=display_dates.get(key, key),
-                        paths=group_paths,
-                    )
-                )
-            else:
-                unique_paths.extend(group_paths)
-
+        # The third return value is kept for compatibility with older controller
+        # code, but it is intentionally empty because marked-for-deletion rows
+        # are no longer split into a separate section.
         return duplicate_groups, unique_paths, []
 
     def protect_duplicate_groups_from_all_delete(
