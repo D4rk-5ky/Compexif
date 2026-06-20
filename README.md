@@ -39,6 +39,7 @@ The main goal of this project is to help find possible duplicate photos by compa
 - Show warnings/errors in a copyable window that updates while scans/appends continue.
 - Persistent bottom-left status statistics after scanning, appending, loading lists, or searching duplicates.
 - Multi-threaded metadata-date scanning, image-detail prefetching, saved-list validation, and duplicate search.
+- Thread-count drop-down beside **Search duplicates**, filled from the detected CPU logical thread count.
 - App/window icon included.
 - PyInstaller one-file build support with icon.
 
@@ -100,6 +101,7 @@ Append list
 Save image list
 Load image list
 Search duplicates
+Threads drop-down
 ```
 
 ### Load pictures
@@ -135,6 +137,28 @@ Loads a saved JSON image list and replaces the current list.
 ### Search duplicates
 
 Searches the current list for images that share the same embedded metadata date, then groups those images together.
+
+### Threads drop-down
+
+The drop-down beside **Search duplicates** controls how many worker threads are used for file-heavy work.
+
+It is filled from the logical CPU thread count detected at startup, for example:
+
+```text
+1 thread
+2 threads
+3 threads
+...
+```
+
+The chosen value is used for:
+
+- metadata-date scanning
+- image-detail prefetching before sorting/list building
+- checking saved JSON image lists
+- duplicate metadata-date search
+
+Use fewer threads for slow USB drives, spinning disks, or network folders. Use more threads for SSD/NVMe storage if the computer stays responsive. Duplicate grouping is still done after the threaded results are merged, so matching metadata dates are found even when files were processed by different worker threads.
 
 ## Bottom action buttons
 
@@ -371,7 +395,9 @@ Metadata reading is the slowest part of large scans. Compexif now uses backgroun
 
 The GUI still builds Qt widgets on the main thread, because Qt widgets must not be created from worker threads. The worker threads only read file/metadata information and return results. Duplicate grouping is merged after all worker results are collected, so images can still be matched as duplicates even when they were processed by different threads.
 
-The default worker count is automatic and capped at 8. You can change it with an environment variable:
+The default worker count is automatic and capped at 8. You can change it directly in the **Threads** drop-down beside **Search duplicates**. The drop-down is filled from the detected logical CPU thread count.
+
+You can also set the startup value with an environment variable:
 
 ```bash
 COMPEXIF_METADATA_WORKERS=4 ./main.py

@@ -95,6 +95,35 @@
            </property>
           </widget>
          </item>
+         <item>
+          <widget class="QLabel" name="labelMetadataWorkers">
+           <property name="toolTip">
+            <string>Number of worker threads used for metadata scanning, image-detail prefetching, saved-list checking, and duplicate search.</string>
+           </property>
+           <property name="text">
+            <string>Threads:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="comboMetadataWorkers">
+           <property name="toolTip">
+            <string>Choose how many worker threads to use. Filled from the detected CPU logical thread count at startup.</string>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>110</width>
+             <height>0</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>150</width>
+             <height>16777215</height>
+            </size>
+           </property>
+          </widget>
+         </item>
         </layout>
        </item>
        <item>

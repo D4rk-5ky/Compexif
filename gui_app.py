@@ -20,7 +20,9 @@ from PySide6.QtGui import QAction, QBrush, QColor, QFont
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMenu,
@@ -54,7 +56,7 @@ from metadata_threading import (
 from picture_list_columns import DEFAULT_COLUMN_WIDTHS, HEADERS, PictureColumn, row_values_for_path
 from picture_list_io import PictureListDocument, PictureListEntry, read_picture_list, write_picture_list
 from picture_loader import is_image_file, load_picture_paths_with_progress
-from threaded_work import default_worker_count, run_path_work_threaded
+from threaded_work import available_cpu_thread_count, default_worker_count, run_path_work_threaded
 from warnings_errors_dialog import WarningsErrorsDialog
 from trash_delete import move_path_to_trash
 from picture_sorting import (
@@ -163,6 +165,7 @@ class PictureExifCompareApp:
         self.btn_save_image_list: QPushButton = self._required_child(QPushButton, "btnSaveImageList")
         self.btn_load_image_list: QPushButton = self._required_child(QPushButton, "btnLoadImageList")
         self.btn_search_duplicates: QPushButton = self._required_child(QPushButton, "btnSearchDuplicates")
+        self.label_metadata_workers, self.combo_metadata_workers = self._find_or_create_worker_selector()
         self.list_pictures: QTreeWidget = self._required_child(QTreeWidget, "listPictures")
         self.btn_keep: QPushButton = self._required_child(QPushButton, "btnKeepPicture")
         self.btn_clear_keep: QPushButton = self._required_child(QPushButton, "btnClearKeepMark")
@@ -235,6 +238,76 @@ class PictureExifCompareApp:
             "Images with the same embedded metadata date are grouped as possible duplicates. "
             "Tick a box to mark that duplicate for deletion."
         )
+
+    def _find_or_create_worker_selector(self) -> tuple[QLabel, QComboBox]:
+        """Find/create the metadata worker thread selector beside Search duplicates."""
+        label = self.window.findChild(QLabel, "labelMetadataWorkers")
+        combo = self.window.findChild(QComboBox, "comboMetadataWorkers")
+
+        if label is None:
+            label = QLabel("Threads:", self.window)
+            label.setObjectName("labelMetadataWorkers")
+        else:
+            label.setText("Threads:")
+
+        if combo is None:
+            combo = QComboBox(self.window)
+            combo.setObjectName("comboMetadataWorkers")
+
+        # If this UI file did not already contain the widgets, place them right
+        # after the Search duplicates button in the top button row.
+        top_layout = self.window.findChild(QHBoxLayout, "pictureListTopButtonsLayout")
+        if top_layout is not None:
+            search_index = top_layout.indexOf(self.btn_search_duplicates)
+            combo_index = top_layout.indexOf(combo)
+            label_index = top_layout.indexOf(label)
+            insert_at = search_index + 1 if search_index >= 0 else top_layout.count()
+
+            if label_index < 0:
+                top_layout.insertWidget(insert_at, label)
+                insert_at += 1
+            if combo_index < 0:
+                top_layout.insertWidget(insert_at, combo)
+
+        cpu_threads = available_cpu_thread_count()
+        current_workers = max(1, int(self.metadata_worker_count))
+
+        combo.blockSignals(True)
+        combo.clear()
+        for worker_count in range(1, cpu_threads + 1):
+            text = "1 thread" if worker_count == 1 else f"{worker_count} threads"
+            combo.addItem(text, worker_count)
+
+        if current_workers > cpu_threads:
+            combo.addItem(f"{current_workers} threads (custom)", current_workers)
+
+        selected_index = combo.findData(current_workers)
+        if selected_index < 0:
+            selected_index = combo.findData(default_worker_count())
+        if selected_index < 0:
+            selected_index = 0
+        combo.setCurrentIndex(selected_index)
+        self.metadata_worker_count = int(combo.currentData())
+        combo.blockSignals(False)
+
+        combo.setToolTip(
+            f"Number of worker threads used for metadata scanning, saved-list checking, "
+            f"image-detail prefetching, and duplicate search. Detected {cpu_threads} logical CPU thread(s)."
+        )
+        label.setToolTip(combo.toolTip())
+        combo.setMinimumWidth(110)
+        combo.setMaximumWidth(150)
+        return label, combo
+
+    def on_metadata_worker_count_changed(self, index: int) -> None:
+        """Apply the worker thread count chosen in the top-row drop-down."""
+        if index < 0:
+            return
+        value = self.combo_metadata_workers.itemData(index)
+        if value is None:
+            return
+        self.metadata_worker_count = max(1, int(value))
+        self.message(f"Metadata worker threads set to {self.metadata_worker_count}.")
 
     def _find_or_create_progress_bar(self) -> QProgressBar:
         """Find a progress bar from the UI file or add one under the list."""
@@ -346,6 +419,7 @@ class PictureExifCompareApp:
             "btn_save_image_list",
             "btn_load_image_list",
             "btn_search_duplicates",
+            "combo_metadata_workers",
             "btn_move_to_trash",
         ):
             widget = getattr(self, attr_name, None)
@@ -486,7 +560,7 @@ class PictureExifCompareApp:
 
         self.progress_scan.setRange(0, max(total, 1))
         self.progress_scan.setValue(done)
-        text = f"{phase} {done}/{total} picture(s) · {self.metadata_worker_count} thread(s)..."
+        text = f"{phase} {done}/{total} picture(s) · {self.metadata_worker_count} worker thread(s)..."
         self.progress_scan.setFormat(text)
         if current_path is not None:
             self.progress_scan.setToolTip(str(current_path))
@@ -751,6 +825,7 @@ class PictureExifCompareApp:
         self.btn_save_image_list.clicked.connect(self.save_current_picture_list)
         self.btn_load_image_list.clicked.connect(self.load_saved_picture_list)
         self.btn_search_duplicates.clicked.connect(self.search_duplicates_in_current_list)
+        self.combo_metadata_workers.currentIndexChanged.connect(self.on_metadata_worker_count_changed)
         self.btn_pause_scan.clicked.connect(self.toggle_scan_pause)
         self.btn_cancel_scan.clicked.connect(self.cancel_scan)
         self.list_pictures.currentItemChanged.connect(self.on_picture_selected)
@@ -1762,7 +1837,7 @@ class PictureExifCompareApp:
                     f"{skipped_missing} missing · {skipped_unsupported} unsupported · "
                     f"{skipped_without_metadata_date} without metadata date · "
                     f"{read_error_count} read warning/error(s) · "
-                    f"{self.metadata_worker_count} thread(s)"
+                    f"{self.metadata_worker_count} worker thread(s)"
                 )
                 self.progress_scan.setFormat(text)
                 if current_path is not None:

@@ -18,6 +18,20 @@ PathWorker = Callable[[Path], T]
 PathWorkProgressCallback = Callable[[int, int, Path | None, str], None]
 
 
+def available_cpu_thread_count() -> int:
+    """Return the number of logical CPU threads available to this process."""
+    try:
+        # Linux can restrict a process to a subset of CPUs. Respect that when
+        # available so the drop-down does not offer impossible worker counts.
+        affinity = os.sched_getaffinity(0)  # type: ignore[attr-defined]
+        if affinity:
+            return max(1, len(affinity))
+    except (AttributeError, OSError):
+        pass
+
+    return max(1, os.cpu_count() or 1)
+
+
 def default_worker_count() -> int:
     """Return the default number of metadata worker threads.
 
@@ -32,8 +46,7 @@ def default_worker_count() -> int:
         except ValueError:
             pass
 
-    cpu_count = os.cpu_count() or 2
-    return max(1, min(8, cpu_count))
+    return max(1, min(8, available_cpu_thread_count()))
 
 
 def normalized_worker_count(max_workers: int | None, total_items: int | None = None) -> int:
