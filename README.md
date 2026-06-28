@@ -7,7 +7,7 @@ The main goal of this project is to help find possible duplicate photos by compa
 > [!IMPORTANT]
 > **Disclaimer:** This software is provided as-is. You, the user, are fully responsible for any damage, data loss, accidental deletion, corruption, overwrite, wrong duplicate decision, or other problems caused by using this software. Always test with copied files first and keep backups before using it on important photos.
 
-> ⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
 
 ## Disclaimer
 
